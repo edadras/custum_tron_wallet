@@ -4,7 +4,8 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { Worker } from 'node:worker_threads';
-import { BASE58_ALPHABET, isValidBase58 } from './tron.js';
+import * as secp from '@noble/secp256k1';
+import { BASE58_ALPHABET, isValidBase58, publicKeyToAddress } from './tron.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -12,6 +13,7 @@ function parseArgs(argv) {
   const opts = {
     mode: null, // 'prefix' | 'suffix' | 'contains'
     target: null,
+    verify: null, // a private key hex to derive an address from (no search)
     threads: Math.max(1, os.cpus().length),
     ignoreCase: false,
     count: 1,
@@ -36,6 +38,10 @@ function parseArgs(argv) {
       case '-m':
       case '--contains':
         setMode('contains', argv[++i]);
+        break;
+      case '-v':
+      case '--verify':
+        opts.verify = argv[++i];
         break;
       case '-t':
       case '--threads':
@@ -84,6 +90,8 @@ Other options:
   -t, --threads <n>      Number of CPU worker threads (default: all cores)
   -i, --ignore-case      Case-insensitive match (faster)
   -c, --count <n>        Stop after finding n addresses (default: 1)
+  -v, --verify <hexkey>  Print the address for a private key (no search).
+                         Use this to verify a key from any GPU tool offline.
   -h, --help             Show this help
 
 Examples:
@@ -158,8 +166,32 @@ function humanNum(n) {
   return String(Math.round(n));
 }
 
+// Derive and print the TRON address for a given private key. Useful to verify,
+// fully offline, that a key found by any external tool (e.g. a GPU generator)
+// really controls the address it claims — before sending funds to it.
+function verifyKey(privHex) {
+  const clean = privHex.trim().replace(/^0x/, '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(clean)) {
+    console.error('\nError: private key must be 64 hex characters (32 bytes).\n');
+    process.exit(1);
+  }
+  let address;
+  try {
+    address = publicKeyToAddress(secp.getPublicKey(clean, false));
+  } catch (e) {
+    console.error(`\nError: invalid private key (${e.message}).\n`);
+    process.exit(1);
+  }
+  console.log(`\nPrivate Key: ${clean}`);
+  console.log(`Address:     ${address}\n`);
+}
+
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
+  if (opts.verify) {
+    verifyKey(opts.verify);
+    process.exit(0);
+  }
   if (opts.help || !opts.target) {
     printHelp();
     process.exit(opts.help ? 0 : 1);

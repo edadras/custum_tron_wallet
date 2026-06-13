@@ -77,17 +77,25 @@ export function base58CheckEncode(payload21) {
 }
 
 /**
- * Convert an uncompressed public key (65 bytes: 0x04 || X || Y) into a TRON
- * Base58Check address string.
+ * Convert the 64-byte public key coordinates (X || Y, no 0x04 prefix) into a
+ * TRON Base58Check address string.
  */
-export function publicKeyToAddress(uncompressedPubKey) {
-  // Drop the 0x04 prefix; hash the 64-byte X||Y with keccak-256.
-  const hash = keccak_256(uncompressedPubKey.subarray(1));
+export function addressFromPublicXY(xy64) {
+  const hash = keccak_256(xy64);
   // Address = last 20 bytes of the hash, prefixed with 0x41.
   const payload = new Uint8Array(21);
   payload[0] = TRON_PREFIX_BYTE;
   payload.set(hash.subarray(12), 1);
   return base58CheckEncode(payload);
+}
+
+/**
+ * Convert an uncompressed public key (65 bytes: 0x04 || X || Y) into a TRON
+ * Base58Check address string.
+ */
+export function publicKeyToAddress(uncompressedPubKey) {
+  // Drop the 0x04 prefix; hash the 64-byte X||Y with keccak-256.
+  return addressFromPublicXY(uncompressedPubKey.subarray(1));
 }
 
 /** True if a string contains only valid Base58 characters. */
