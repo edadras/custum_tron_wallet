@@ -2,3 +2,5 @@ node_modules/
 *.log
 results.txt
 .DS_Store
+wasm/target/
+Cargo.lock

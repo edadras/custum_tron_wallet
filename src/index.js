@@ -6,6 +6,7 @@ import path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import * as secp from '@noble/secp256k1';
 import { BASE58_ALPHABET, isValidBase58, publicKeyToAddress } from './tron.js';
+import { isWasmAvailable } from './wasm-engine.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -17,6 +18,7 @@ function parseArgs(argv) {
     threads: Math.max(1, os.cpus().length),
     ignoreCase: false,
     count: 1,
+    engine: null, // 'wasm' | 'js' (auto-detected when null)
     help: false,
   };
   const setMode = (mode, value) => {
@@ -55,6 +57,9 @@ function parseArgs(argv) {
       case '--count':
         opts.count = parseInt(argv[++i], 10);
         break;
+      case '--engine':
+        opts.engine = argv[++i];
+        break;
       case '-h':
       case '--help':
         opts.help = true;
@@ -90,6 +95,7 @@ Other options:
   -t, --threads <n>      Number of CPU worker threads (default: all cores)
   -i, --ignore-case      Case-insensitive match (faster)
   -c, --count <n>        Stop after finding n addresses (default: 1)
+      --engine <e>       Compute engine: wasm (fast, default) or js (fallback)
   -v, --verify <hexkey>  Print the address for a private key (no search).
                          Use this to verify a key from any GPU tool offline.
   -h, --help             Show this help
@@ -222,10 +228,18 @@ async function main() {
     process.exit(1);
   }
 
+  // Pick the engine: WASM (fast) by default when its kernel is present.
+  let engine = opts.engine;
+  if (engine !== 'js' && engine !== 'wasm') engine = isWasmAvailable() ? 'wasm' : 'js';
+  if (engine === 'wasm' && !isWasmAvailable()) {
+    console.error('\nError: WASM kernel not found. Build it or use --engine js.\n');
+    process.exit(1);
+  }
+
   const where = { prefix: 'starting with', contains: 'containing', suffix: 'ending with' }[opts.mode];
   const exp = expectedAttempts(opts.mode, target, opts.ignoreCase);
   console.log(`\nSearching for TRON addresses ${where}:  ${target}`);
-  console.log(`Mode: ${opts.ignoreCase ? 'case-insensitive' : 'case-sensitive'} | Threads: ${opts.threads} | Target count: ${opts.count}`);
+  console.log(`Engine: ${engine.toUpperCase()} | Mode: ${opts.ignoreCase ? 'case-insensitive' : 'case-sensitive'} | Threads: ${opts.threads} | Target count: ${opts.count}`);
   console.log(`Average attempts needed: ~${humanNum(exp)}\n`);
 
   const reportEvery = 2000;
@@ -259,7 +273,7 @@ async function main() {
 
   function startWorker() {
     const w = new Worker(path.join(__dirname, 'worker.js'), {
-      workerData: { mode: opts.mode, target, ignoreCase: opts.ignoreCase, reportEvery },
+      workerData: { mode: opts.mode, target, ignoreCase: opts.ignoreCase, reportEvery, engine },
     });
     w.on('message', (msg) => {
       if (msg.type === 'progress') {
