@@ -10,18 +10,32 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 function parseArgs(argv) {
   const opts = {
-    prefix: null,
+    mode: null, // 'prefix' | 'suffix' | 'contains'
+    target: null,
     threads: Math.max(1, os.cpus().length),
     ignoreCase: false,
     count: 1,
     help: false,
+  };
+  const setMode = (mode, value) => {
+    if (opts.mode && opts.mode !== mode) opts.modeConflict = true;
+    opts.mode = mode;
+    opts.target = value;
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     switch (a) {
       case '-p':
       case '--prefix':
-        opts.prefix = argv[++i];
+        setMode('prefix', argv[++i]);
+        break;
+      case '-s':
+      case '--suffix':
+        setMode('suffix', argv[++i]);
+        break;
+      case '-m':
+      case '--contains':
+        setMode('contains', argv[++i]);
         break;
       case '-t':
       case '--threads':
@@ -40,7 +54,8 @@ function parseArgs(argv) {
         opts.help = true;
         break;
       default:
-        if (!opts.prefix && !a.startsWith('-')) opts.prefix = a;
+        // Bare argument => default to prefix mode.
+        if (!opts.target && !a.startsWith('-')) setMode('prefix', a);
     }
   }
   return opts;
@@ -52,22 +67,34 @@ TRON Vanity Address Generator
 
 Usage:
   tron-vanity --prefix <text> [options]
-  npm start -- --prefix <text> [options]
+  tron-vanity --contains <text> [options]
+  tron-vanity --suffix <text> [options]
 
-The generated address always starts with "T". Your text is matched right after
-it, so --prefix RAHN finds addresses like  TRAHN...  (you may also pass the
-leading T yourself, e.g. --prefix TRAHN).
+Generate a brand-new TRON wallet whose address contains your chosen text.
+Every TRON address starts with "T" and is 34 characters long. You can fix a
+readable chunk of it (your "advertising" text) while the rest stays random.
+You CANNOT fix all 34 characters at once.
 
-Options:
-  -p, --prefix <text>   Text the address should start with (required)
-  -t, --threads <n>     Number of CPU worker threads (default: all cores)
-  -i, --ignore-case     Case-insensitive match (much faster)
-  -c, --count <n>       Stop after finding n addresses (default: 1)
-  -h, --help            Show this help
+Match modes (pick one):
+  -p, --prefix <text>    Address starts with the text, e.g. TRAHN...  (after T)
+  -m, --contains <text>  Text appears ANYWHERE in the address
+  -s, --suffix <text>    Address ends with the text
+
+Other options:
+  -t, --threads <n>      Number of CPU worker threads (default: all cores)
+  -i, --ignore-case      Case-insensitive match (faster)
+  -c, --count <n>        Stop after finding n addresses (default: 1)
+  -h, --help             Show this help
+
+Examples:
+  tron-vanity --prefix RAHN
+  tron-vanity --contains ESMAEiL -i      # advertising text anywhere, any case
+  tron-vanity --suffix 8888
 
 Notes:
   * Valid characters only (Base58). NOT allowed: 0 (zero), O, I, l.
-  * Each extra character is ~58x harder. 4-5 chars: fast. 6: hours. 7+: very slow.
+  * Each extra character is ~58x harder. Long text can take days — that's fine,
+    just leave it running; a live ETA is shown.
 `);
 }
 
@@ -82,15 +109,23 @@ function matchesForChar(ch, ignoreCase) {
 }
 
 // Average number of attempts needed (expected value of a geometric trial).
-function expectedAttempts(prefix, ignoreCase) {
-  // The leading "T" is guaranteed by the 0x41 version byte, so it's free.
-  const constrained = prefix.startsWith('T') ? prefix.slice(1) : prefix;
-  let attempts = 1;
+function expectedAttempts(mode, target, ignoreCase) {
+  // For a prefix that starts with "T", the leading "T" is guaranteed by the
+  // 0x41 version byte, so it's free and doesn't add difficulty.
+  const constrained =
+    mode === 'prefix' && target.startsWith('T') ? target.slice(1) : target;
+  let perMatch = 1;
   for (const ch of constrained) {
     const m = matchesForChar(ch, ignoreCase) || 1;
-    attempts *= 58 / m;
+    perMatch *= 58 / m;
   }
-  return attempts;
+  // "contains" can match at many positions in the 34-char address, so it is
+  // easier than a fixed-position match of the same length.
+  if (mode === 'contains') {
+    const positions = Math.max(1, 34 - target.length);
+    return perMatch / positions;
+  }
+  return perMatch;
 }
 
 function humanTime(seconds) {
@@ -125,18 +160,28 @@ function humanNum(n) {
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
-  if (opts.help || !opts.prefix) {
+  if (opts.help || !opts.target) {
     printHelp();
     process.exit(opts.help ? 0 : 1);
   }
 
-  // Normalise: every TRON address starts with T, so ensure the prefix does too.
-  let prefix = opts.prefix;
-  if (!prefix.startsWith('T')) prefix = 'T' + prefix;
+  if (opts.modeConflict) {
+    console.error(
+      '\nError: choose only ONE match mode (--prefix, --contains, or --suffix).\n',
+    );
+    process.exit(1);
+  }
 
-  // Validate characters (skip the leading T which we just ensured).
-  const rest = prefix.slice(1);
-  if (!isValidBase58(rest)) {
+  // For prefix mode, every TRON address starts with T, so ensure the prefix
+  // does too. Other modes use the text exactly as given.
+  let target = opts.target;
+  if (opts.mode === 'prefix' && !target.startsWith('T')) target = 'T' + target;
+
+  // Validate characters. For a T-prefix, the leading T is fine; validate the
+  // rest. For other modes the whole text must be valid Base58.
+  const toValidate =
+    opts.mode === 'prefix' && target.startsWith('T') ? target.slice(1) : target;
+  if (!isValidBase58(toValidate)) {
     console.error(
       `\nError: the text contains characters that don't exist in TRON addresses.\n` +
         `Not allowed: 0 (zero), O (capital o), I (capital i), l (lowercase L).\n` +
@@ -145,8 +190,9 @@ async function main() {
     process.exit(1);
   }
 
-  const exp = expectedAttempts(prefix, opts.ignoreCase);
-  console.log(`\nSearching for TRON addresses starting with:  ${prefix}`);
+  const where = { prefix: 'starting with', contains: 'containing', suffix: 'ending with' }[opts.mode];
+  const exp = expectedAttempts(opts.mode, target, opts.ignoreCase);
+  console.log(`\nSearching for TRON addresses ${where}:  ${target}`);
   console.log(`Mode: ${opts.ignoreCase ? 'case-insensitive' : 'case-sensitive'} | Threads: ${opts.threads} | Target count: ${opts.count}`);
   console.log(`Average attempts needed: ~${humanNum(exp)}\n`);
 
@@ -181,7 +227,7 @@ async function main() {
 
   function startWorker() {
     const w = new Worker(path.join(__dirname, 'worker.js'), {
-      workerData: { prefix, ignoreCase: opts.ignoreCase, reportEvery },
+      workerData: { mode: opts.mode, target, ignoreCase: opts.ignoreCase, reportEvery },
     });
     w.on('message', (msg) => {
       if (msg.type === 'progress') {

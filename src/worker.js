@@ -8,7 +8,8 @@ parentPort.on('message', (msg) => {
 });
 
 const result = search({
-  prefix: workerData.prefix,
+  mode: workerData.mode,
+  target: workerData.target,
   ignoreCase: workerData.ignoreCase,
   reportEvery: workerData.reportEvery,
   shouldStop: () => stop,

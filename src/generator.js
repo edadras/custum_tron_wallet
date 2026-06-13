@@ -25,18 +25,30 @@ function scalarToPrivHex(scalar) {
 }
 
 /**
- * Search for an address whose Base58 form starts with `prefix`.
+ * Build a predicate that tests an address against the target text.
+ * @param {'prefix'|'suffix'|'contains'} mode
+ */
+function makeMatcher(mode, target) {
+  if (mode === 'suffix') return (addr) => addr.endsWith(target);
+  if (mode === 'contains') return (addr) => addr.includes(target);
+  return (addr) => addr.startsWith(target); // 'prefix'
+}
+
+/**
+ * Search for an address whose Base58 form matches the target text.
  *
  * @param {object} opts
- * @param {string} opts.prefix        Full prefix the address must start with (e.g. "TRAHINO").
+ * @param {'prefix'|'suffix'|'contains'} opts.mode  Where the text must appear.
+ * @param {string} opts.target        The text to match.
  * @param {boolean} opts.ignoreCase   Case-insensitive matching.
  * @param {number} opts.reportEvery   Report progress every N attempts.
  * @param {() => boolean} opts.shouldStop  Return true to abort the loop.
  * @param {(count:number)=>void} opts.onProgress  Called with attempts since last report.
  * @returns {{address:string, privateKey:string, attempts:number}|null}
  */
-export function search({ prefix, ignoreCase, reportEvery, shouldStop, onProgress }) {
-  const target = ignoreCase ? prefix.toLowerCase() : prefix;
+export function search({ mode, target, ignoreCase, reportEvery, shouldStop, onProgress }) {
+  const needle = ignoreCase ? target.toLowerCase() : target;
+  const matches = makeMatcher(mode, needle);
   const G = secp.ProjectivePoint.BASE;
 
   let scalar = randomScalar();
@@ -52,7 +64,7 @@ export function search({ prefix, ignoreCase, reportEvery, shouldStop, onProgress
     attempts++;
     sinceReport++;
 
-    if (hay.startsWith(target)) {
+    if (matches(hay)) {
       return { address, privateKey: scalarToPrivHex(scalar), attempts };
     }
 
