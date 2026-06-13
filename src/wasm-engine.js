@@ -44,6 +44,15 @@ export function loadKernel() {
     selftest(count) {
       return e.selftest(count);
     },
+    /** Base58 address of the current base point (for cross-checking). */
+    startAddress() {
+      const len = e.dump_start_addr();
+      const m = mem();
+      const ptr = e.addr_out_ptr();
+      let s = '';
+      for (let i = 0; i < len; i++) s += String.fromCharCode(m[ptr + i]);
+      return s;
+    },
     /** Read the 32-byte private key of the last match as hex. */
     outKeyHex() {
       const m = mem();

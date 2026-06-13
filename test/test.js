@@ -72,6 +72,17 @@ if (isWasmAvailable()) {
     assert.strictEqual(mism, 0, 'fast affine path must equal the reference');
   });
 
+  check('WASM Base58 matches the independent JS implementation', () => {
+    const k = loadKernel();
+    for (let i = 0; i < 50; i++) {
+      const key = randomBytes(32);
+      k.init(key);
+      const wasmAddr = k.startAddress();
+      const jsAddr = publicKeyToAddress(secp.getPublicKey(Buffer.from(key).toString('hex'), false));
+      assert.strictEqual(wasmAddr, jsAddr, 'WASM address must equal the JS address');
+    }
+  });
+
   check('WASM found key derives the target address', () => {
     const k = loadKernel();
     k.init(randomBytes(32));

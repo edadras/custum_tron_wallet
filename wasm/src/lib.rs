@@ -55,6 +55,7 @@ static mut TABLE_READY: bool = false;
 static mut FAST_XB: Fp = Fp::ZERO; // current base point B
 static mut FAST_YB: Fp = Fp::ZERO;
 static mut FAST_S: U256 = U256::ZERO; // scalar of B
+static mut ADDR_OUT: [u8; 40] = [0u8; 40]; // output: ASCII address (for tests)
 
 #[no_mangle]
 pub extern "C" fn start_key_ptr() -> *const u8 {
@@ -67,6 +68,23 @@ pub extern "C" fn out_key_ptr() -> *const u8 {
 #[no_mangle]
 pub extern "C" fn target_ptr() -> *const u8 {
     core::ptr::addr_of!(TARGET) as *const u8
+}
+#[no_mangle]
+pub extern "C" fn addr_out_ptr() -> *const u8 {
+    core::ptr::addr_of!(ADDR_OUT) as *const u8
+}
+
+/// Write the Base58 address of the current fast base point into ADDR_OUT and
+/// return its length. Used by tests to cross-check Base58 against an
+/// independent (JS) implementation. Requires init_fast() first.
+#[no_mangle]
+pub extern "C" fn dump_start_addr() -> u32 {
+    let xb = unsafe { FAST_XB };
+    let yb = unsafe { FAST_YB };
+    let mut addr = [0u8; 40];
+    let len = address_from_xy(&xb.retrieve().to_be_bytes(), &yb.retrieve().to_be_bytes(), &mut addr);
+    unsafe { ADDR_OUT[..len].copy_from_slice(&addr[..len]) };
+    len as u32
 }
 
 // ---------------------------------------------------------------------------
@@ -393,25 +411,54 @@ fn address_from_xy(x: &[u8], y: &[u8], out: &mut [u8; 40]) -> usize {
     base58_into(&full, out)
 }
 
-/// Base58-encode `input` (no leading zeros expected for 0x41) into `out`.
+// 58^5 — extracted per long-division pass to produce 5 Base58 digits at once.
+const POW5: u64 = 656356768;
+
+/// Base58-encode `input` (a 25-byte 0x41-prefixed payload, no leading zeros)
+/// into `out`. Works in u32 limbs and pulls 5 digits per division for speed.
 fn base58_into(input: &[u8; 25], out: &mut [u8; 40]) -> usize {
-    let mut digits = [0u8; 40];
-    let mut len = 0usize;
-    for &byte in input.iter() {
-        let mut carry = byte as u32;
-        for d in digits.iter_mut().take(len) {
-            carry += (*d as u32) << 8;
-            *d = (carry % 58) as u8;
-            carry /= 58;
+    // Pack the 25 big-endian bytes into 7 big-endian u32 limbs (3 zero pad bytes).
+    let mut limbs = [0u32; 7];
+    for (k, limb) in limbs.iter_mut().enumerate() {
+        let mut v = 0u32;
+        for b in 0..4 {
+            let pi = k * 4 + b; // index into the conceptually 28-byte padded number
+            let byte = if pi < 3 { 0 } else { input[pi - 3] };
+            v = (v << 8) | byte as u32;
         }
-        while carry > 0 {
-            digits[len] = (carry % 58) as u8;
-            len += 1;
-            carry /= 58;
+        *limb = v;
+    }
+
+    let mut first = 0usize;
+    while first < 7 && limbs[first] == 0 {
+        first += 1;
+    }
+
+    let mut digits = [0u8; 40]; // little-endian Base58 digit values
+    let mut dlen = 0usize;
+    while first < 7 {
+        let mut rem: u64 = 0;
+        for limb in limbs.iter_mut().skip(first) {
+            let acc = (rem << 32) | *limb as u64;
+            *limb = (acc / POW5) as u32;
+            rem = acc % POW5;
+        }
+        // Five Base58 digits from this pass (least significant first).
+        for _ in 0..5 {
+            digits[dlen] = (rem % 58) as u8;
+            dlen += 1;
+            rem /= 58;
+        }
+        while first < 7 && limbs[first] == 0 {
+            first += 1;
         }
     }
-    for i in 0..len {
-        out[i] = BASE58_ALPHABET[digits[len - 1 - i] as usize];
+    // Drop spurious leading-zero digits from the final group.
+    while dlen > 1 && digits[dlen - 1] == 0 {
+        dlen -= 1;
     }
-    len
+    for i in 0..dlen {
+        out[i] = BASE58_ALPHABET[digits[dlen - 1 - i] as usize];
+    }
+    dlen
 }
