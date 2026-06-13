@@ -1,0 +1,21 @@
+{
+  "name": "tron-vanity",
+  "version": "1.0.0",
+  "description": "Generate custom (vanity) TRON wallet addresses that start with a chosen text.",
+  "type": "module",
+  "bin": {
+    "tron-vanity": "src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node test/test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@noble/hashes": "^1.4.0",
+    "@noble/secp256k1": "^2.1.0"
+  },
+  "license": "MIT"
+}
