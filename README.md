@@ -32,6 +32,9 @@ npm run build:wasm
 
 ## استفاده
 
+> همه‌ی دستورها را از **ریشه‌ی پروژه** اجرا کنید (همان‌جا که `package.json` است)،
+> نه از داخل پوشه‌ی `src`. روی ویندوز هم همین دستورها در PowerShell کار می‌کنند.
+
 ```bash
 node src/index.js --prefix RAHN
 # یا
@@ -171,7 +174,7 @@ src/
 wasm/
   src/lib.rs     # کرنل جستجوی WASM (Rust)
   Cargo.toml     # وابستگی‌های Rust (k256, sha3, sha2)
-  build.sh       # اسکریپت ساخت کرنل WASM
+  build.mjs      # اسکریپت ساخت کرنل WASM (سازگار با ویندوز/لینوکس/مک)
 test/
   test.js        # تست‌های صحت مشتق‌گیری آدرس
 ```

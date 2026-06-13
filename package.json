@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node src/index.js",
     "test": "node test/test.js",
-    "build:wasm": "bash wasm/build.sh"
+    "build:wasm": "node wasm/build.mjs"
   },
   "engines": {
     "node": ">=18"
