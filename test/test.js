@@ -56,4 +56,35 @@ check('Base58 validation', () => {
   assert.ok([...BASE58_ALPHABET].every((c) => 'OIl0'.indexOf(c) === -1));
 });
 
+// 5. WASM fast engine: addresses must match the k256 reference, and a found
+//    key must derive the target address.
+import { loadKernel, isWasmAvailable } from '../src/wasm-engine.js';
+import { randomBytes } from 'node:crypto';
+
+if (isWasmAvailable()) {
+  check('WASM fast path matches k256 reference', () => {
+    const k = loadKernel();
+    let mism = 0;
+    for (let i = 0; i < 8; i++) {
+      k.init(randomBytes(32));
+      mism += k.selftest(256);
+    }
+    assert.strictEqual(mism, 0, 'fast affine path must equal the reference');
+  });
+
+  check('WASM found key derives the target address', () => {
+    const k = loadKernel();
+    k.init(randomBytes(32));
+    const tlen = k.setTarget('kift');
+    let idx = -1;
+    for (let n = 0; idx < 0 && n < 4e7; n += 200000) idx = k.run(tlen, 'contains', true, 200000);
+    assert.ok(idx >= 0, 'should find a match');
+    const pk = k.outKeyHex();
+    const addr = publicKeyToAddress(secp.getPublicKey(pk, false));
+    assert.ok(addr.toLowerCase().includes('kift'), `address ${addr} must contain kift`);
+  });
+} else {
+  console.log('skip - WASM kernel not built');
+}
+
 console.log(`\n${passed} tests passed.`);

@@ -10,6 +10,7 @@ crate-type = ["cdylib"]
 k256 = { version = "0.13", default-features = false, features = ["arithmetic"] }
 sha3 = { version = "0.10", default-features = false }
 sha2 = { version = "0.10", default-features = false }
+crypto-bigint = { version = "0.5", default-features = false }
 
 [profile.release]
 opt-level = 3

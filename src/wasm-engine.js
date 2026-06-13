@@ -18,10 +18,10 @@ export function loadKernel() {
   const e = instance.exports;
   const mem = () => new Uint8Array(e.memory.buffer);
   return {
-    /** Seed the search from a 32-byte private key. */
+    /** Seed the (fast) search from a 32-byte private key. */
     init(startKey32) {
       mem().set(startKey32, e.start_key_ptr());
-      e.init();
+      e.init_fast();
     },
     /** Write the target text (ASCII Base58) into the kernel. */
     setTarget(targetStr) {
@@ -30,11 +30,19 @@ export function loadKernel() {
       return t.length;
     },
     /**
-     * Scan up to maxIters candidates.
+     * Scan up to maxIters candidates with the fast engine.
      * @returns {number} match iteration index, or -1 if none in this chunk.
      */
     run(targetLen, mode, ignoreCase, maxIters) {
-      return Number(e.run(targetLen, MODE_CODE[mode], ignoreCase ? 1 : 0, maxIters));
+      return Number(e.run_fast(targetLen, MODE_CODE[mode], ignoreCase ? 1 : 0, maxIters));
+    },
+    /**
+     * Compare the fast path against the k256 reference for `count` points from
+     * the current base. Returns the number of mismatching addresses (0 = good).
+     * Requires init() first.
+     */
+    selftest(count) {
+      return e.selftest(count);
     },
     /** Read the 32-byte private key of the last match as hex. */
     outKeyHex() {
