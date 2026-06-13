@@ -41,6 +41,8 @@ function runWasm() {
   // the address, so the target must already be lower-cased to match).
   const needle = ignoreCase ? target.toLowerCase() : target;
   const tlen = kernel.setTarget(needle);
+  // Case-sensitive prefix searches use the range fast path (skips base58check).
+  if (mode === 'prefix' && !ignoreCase) kernel.enablePrefixRange(needle);
   kernel.init(randomBytes(32));
 
   const CHUNK = Math.max(2000, reportEvery); // candidates scanned per kernel call

@@ -5,6 +5,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { base58Decode } from './tron.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WASM_PATH = path.join(__dirname, 'wasm', 'kernel.wasm');
@@ -43,6 +44,27 @@ export function loadKernel() {
      */
     selftest(count) {
       return e.selftest(count);
+    },
+    /**
+     * Enable the prefix range fast path for a case-sensitive prefix. The prefix
+     * maps to a contiguous [min,max] range of 25-byte address values, letting
+     * the kernel skip Base58Check for nearly every candidate.
+     */
+    enablePrefixRange(prefix) {
+      const pad = 34 - prefix.length;
+      const toRange = (s) => {
+        const d = base58Decode(s); // big-endian bytes
+        const out = new Uint8Array(25);
+        out.set(d.slice(-25), 25 - Math.min(25, d.length));
+        return out;
+      };
+      mem().set(toRange(prefix + '1'.repeat(pad)), e.pref_min_ptr());
+      mem().set(toRange(prefix + 'z'.repeat(pad)), e.pref_max_ptr());
+      e.set_pref(1);
+    },
+    /** Prefix-range self-test: disagreements vs the true startsWith (0 = good). */
+    selftestPrefix(count, tlen) {
+      return e.selftest_prefix(count, tlen);
     },
     /** Base58 address of the current base point (for cross-checking). */
     startAddress() {

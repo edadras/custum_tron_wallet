@@ -57,6 +57,14 @@ static mut FAST_YB: Fp = Fp::ZERO;
 static mut FAST_S: U256 = U256::ZERO; // scalar of B
 static mut ADDR_OUT: [u8; 40] = [0u8; 40]; // output: ASCII address (for tests)
 
+// --- Prefix range filter (case-sensitive --prefix fast path). ---
+// A prefix maps to a contiguous range of 25-byte address values [MIN, MAX].
+// We can then accept/reject a candidate from its 21-byte payload alone, skipping
+// the Base58Check (sha256x2 + base58) for almost every candidate.
+static mut PREF_MIN: [u8; 25] = [0u8; 25];
+static mut PREF_MAX: [u8; 25] = [0u8; 25];
+static mut PREF_SET: bool = false;
+
 #[no_mangle]
 pub extern "C" fn start_key_ptr() -> *const u8 {
     core::ptr::addr_of!(START_KEY) as *const u8
@@ -72,6 +80,19 @@ pub extern "C" fn target_ptr() -> *const u8 {
 #[no_mangle]
 pub extern "C" fn addr_out_ptr() -> *const u8 {
     core::ptr::addr_of!(ADDR_OUT) as *const u8
+}
+#[no_mangle]
+pub extern "C" fn pref_min_ptr() -> *const u8 {
+    core::ptr::addr_of!(PREF_MIN) as *const u8
+}
+#[no_mangle]
+pub extern "C" fn pref_max_ptr() -> *const u8 {
+    core::ptr::addr_of!(PREF_MAX) as *const u8
+}
+/// Enable/disable the prefix range fast path (after writing PREF_MIN/MAX).
+#[no_mangle]
+pub extern "C" fn set_pref(on: u32) {
+    unsafe { PREF_SET = on != 0 };
 }
 
 /// Write the Base58 address of the current fast base point into ADDR_OUT and
@@ -210,10 +231,13 @@ pub extern "C" fn run_fast(target_len: u32, mode: u32, ignore_case: u32, max_ite
     let mut inv = [Fp::ZERO; GRP + 1];
     let mut addr = [0u8; 40];
 
+    // Case-sensitive prefix searches can use the range filter (skip base58check).
+    let use_range = mode == 0 && !ic && unsafe { PREF_SET };
+
     let mut iters: u32 = 0;
     while iters < max_iters {
         // Test the base point B (scalar s).
-        if test_point(&xb, &yb, target, mode, ic, &mut addr) {
+        if test_point(&xb, &yb, target, mode, ic, use_range, &mut addr) {
             finish_match(xb, yb, s, s);
             return iters as i64;
         }
@@ -250,7 +274,7 @@ pub extern "C" fn run_fast(target_len: u32, mode: u32, ignore_case: u32, max_ite
             let xr = lambda * lambda - xb - tx;
             let yr = lambda * (xb - xr) - yb;
             if i < GRP {
-                if test_point(&xr, &yr, target, mode, ic, &mut addr) {
+                if test_point(&xr, &yr, target, mode, ic, use_range, &mut addr) {
                     let key = add_mod_n(s, (i as u64) + 1);
                     finish_match(xb, yb, s, key);
                     return iters as i64;
@@ -272,6 +296,35 @@ pub extern "C" fn run_fast(target_len: u32, mode: u32, ignore_case: u32, max_ite
         FAST_S = s;
     }
     -1
+}
+
+/// Self-test for the prefix range filter: for `count` points, compare the
+/// range decision against the true "address starts with TARGET[..tlen]".
+/// Returns the number of disagreements (0 = correct).
+#[no_mangle]
+pub extern "C" fn selftest_prefix(count: u32, tlen: u32) -> u32 {
+    ensure_table();
+    let xb = unsafe { FAST_XB };
+    let yb = unsafe { FAST_YB };
+    let target = unsafe { &TARGET[..tlen as usize] };
+    let mut addr = [0u8; 40];
+    let mut mism = 0u32;
+    let lim = core::cmp::min(count as usize, GRP);
+    for i in 0..lim {
+        let (fx, fy) = if i == 0 {
+            (xb, yb)
+        } else {
+            affine_add(xb, yb, unsafe { TABLE_X[i - 1] }, unsafe { TABLE_Y[i - 1] })
+        };
+        let payload = keccak_payload(&fx.retrieve().to_be_bytes(), &fy.retrieve().to_be_bytes());
+        let by_range = prefix_match(&payload);
+        let len = payload_to_address(&payload, &mut addr);
+        let by_full = matches(&addr[..len], target, 0);
+        if by_range != by_full {
+            mism += 1;
+        }
+    }
+    mism
 }
 
 /// Self-test: compare the fast affine path against the k256 reference for the
@@ -321,8 +374,21 @@ fn finish_match(xb: Fp, yb: Fp, s: U256, key: U256) {
 }
 
 /// Compute the address for an affine point and test it against the target.
-fn test_point(x: &Fp, y: &Fp, target: &[u8], mode: u32, ic: bool, addr: &mut [u8; 40]) -> bool {
-    let len = address_from_xy(&x.retrieve().to_be_bytes(), &y.retrieve().to_be_bytes(), addr);
+fn test_point(
+    x: &Fp,
+    y: &Fp,
+    target: &[u8],
+    mode: u32,
+    ic: bool,
+    use_range: bool,
+    addr: &mut [u8; 40],
+) -> bool {
+    let payload = keccak_payload(&x.retrieve().to_be_bytes(), &y.retrieve().to_be_bytes());
+    if use_range {
+        // Fast path: compare the payload against the prefix range; no base58check.
+        return prefix_match(&payload);
+    }
+    let len = payload_to_address(&payload, addr);
     let a = &mut addr[..len];
     if ic {
         for b in a.iter_mut() {
@@ -330,6 +396,31 @@ fn test_point(x: &Fp, y: &Fp, target: &[u8], mode: u32, ic: bool, addr: &mut [u8
         }
     }
     matches(a, target, mode)
+}
+
+/// True if `payload`'s address starts with the configured prefix, decided from
+/// the payload range. Only the rare boundary case needs the real checksum.
+fn prefix_match(payload: &[u8; 21]) -> bool {
+    let lo = unsafe { PREF_MIN };
+    let hi = unsafe { PREF_MAX };
+    // The real 25-byte value lies in [payload||0x00000000, payload||0xFFFFFFFF].
+    let mut vlow = [0u8; 25];
+    vlow[..21].copy_from_slice(payload);
+    let mut vhigh = [0xffu8; 25];
+    vhigh[..21].copy_from_slice(payload);
+    if vhigh < lo || vlow > hi {
+        return false; // whole interval outside the range
+    }
+    if vlow >= lo && vhigh <= hi {
+        return true; // whole interval inside the range
+    }
+    // Boundary: resolve exactly with the real checksum.
+    let c1 = Sha256::digest(payload);
+    let c2 = Sha256::digest(c1);
+    let mut v = [0u8; 25];
+    v[..21].copy_from_slice(payload);
+    v[21..].copy_from_slice(&c2[..4]);
+    v >= lo && v <= hi
 }
 
 /// Affine point addition P + Q (P != +/-Q). One inversion; used only off the
@@ -387,28 +478,34 @@ fn matches(addr: &[u8], target: &[u8], mode: u32) -> bool {
     }
 }
 
-/// Build the TRON Base58Check address from 32-byte X and Y into `out`.
-fn address_from_xy(x: &[u8], y: &[u8], out: &mut [u8; 40]) -> usize {
+/// keccak of X||Y -> 21-byte payload (0x41 || last 20 bytes of the hash).
+fn keccak_payload(x: &[u8], y: &[u8]) -> [u8; 21] {
     let mut xy = [0u8; 64];
     xy[..32].copy_from_slice(x);
     xy[32..].copy_from_slice(y);
-
     let mut k = Keccak256::new();
     k.update(xy);
     let hash = k.finalize();
-
     let mut payload = [0u8; 21];
     payload[0] = 0x41;
     payload[1..].copy_from_slice(&hash[12..32]);
+    payload
+}
 
+/// Base58Check-encode a 21-byte payload into `out`; returns length.
+fn payload_to_address(payload: &[u8; 21], out: &mut [u8; 40]) -> usize {
     let c1 = Sha256::digest(payload);
     let c2 = Sha256::digest(c1);
-
     let mut full = [0u8; 25];
-    full[..21].copy_from_slice(&payload);
+    full[..21].copy_from_slice(payload);
     full[21..].copy_from_slice(&c2[..4]);
-
     base58_into(&full, out)
+}
+
+/// Build the TRON Base58Check address from 32-byte X and Y into `out`.
+fn address_from_xy(x: &[u8], y: &[u8], out: &mut [u8; 40]) -> usize {
+    let payload = keccak_payload(x, y);
+    payload_to_address(&payload, out)
 }
 
 // 58^5 — extracted per long-division pass to produce 5 Base58 digits at once.

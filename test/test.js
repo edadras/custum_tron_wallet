@@ -83,6 +83,20 @@ if (isWasmAvailable()) {
     }
   });
 
+  check('WASM prefix range filter equals true startsWith', () => {
+    const k = loadKernel();
+    let mism = 0;
+    for (const pfx of ['TA', 'TRx', 'TEST', 'TKq7']) {
+      const tlen = k.setTarget(pfx);
+      k.enablePrefixRange(pfx);
+      for (let i = 0; i < 4; i++) {
+        k.init(randomBytes(32));
+        mism += k.selftestPrefix(256, tlen);
+      }
+    }
+    assert.strictEqual(mism, 0, 'range decision must equal full startsWith');
+  });
+
   check('WASM found key derives the target address', () => {
     const k = loadKernel();
     k.init(randomBytes(32));
